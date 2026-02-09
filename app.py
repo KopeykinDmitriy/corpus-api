@@ -151,94 +151,92 @@ async def collect_web(
         ...,
         description="URL веб-страницы",
         example="https://example.com"
+    ),
+    max_pages: int = Query(
+        5,
+        description="Максимальное количество страниц для обработки",
+        ge=1,
+        le=2000
     )
 ):
-    """
-    Сбор текста с веб-страницы
-    
-    - Загружает HTML страницу
-    - Извлекает заголовок и основной текст
-    - Очищает от HTML тегов и скриптов
-    - Возвращает файл в формате JSONL
-    """
-    
+    """Сбор текста с веб-страницы с обходом внутренних ссылок"""
+
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        base_url = url.rstrip('/')
         
         documents = []
         urls_to_process = [url]
         processed_urls = set()
+        processed_count = 0
         
-        for i in range(1):
-            if not urls_to_process:
-                break
-                
+        while urls_to_process and processed_count < max_pages:
             current_url = urls_to_process.pop(0)
             
             if current_url in processed_urls:
                 continue
                 
             processed_urls.add(current_url)
+            processed_count += 1
+            print(f"processing {processed_count} web page")
+            
             
             try:
-                response = requests.get(current_url, headers=headers, timeout=30)
+                response = requests.get(current_url, headers=headers, timeout=10)
                 response.raise_for_status()
                 
                 soup = BeautifulSoup(response.text, 'html.parser')
                 
-                for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside', 'form']):
+                for tag in soup(['script', 'style']):
                     tag.decompose()
                 
-                title = soup.title.string if soup.title else ""
+                title = soup.title.string if soup.title else current_url
                 
                 text_content = ""
+                main_content = soup.find('article') or soup.find('main') or soup.find('div', class_='content')
                 
-                content_selectors = [
-                    'article',
-                    'main',
-                    '.content',
-                    '.article',
-                    '.post',
-                    '.text',
-                    '#content',
-                    '[role="main"]'
-                ]
-                
-                for selector in content_selectors:
-                    element = soup.select_one(selector)
-                    if element:
-                        text_content = element.get_text(separator=' ', strip=True)
-                        break
-                
-                if not text_content:
-                    body = soup.body
+                if main_content:
+                    text_content = main_content.get_text(separator=' ', strip=True)
+                else:
+                    body = soup.find('body')
                     if body:
                         text_content = body.get_text(separator=' ', strip=True)
                 
                 text_content = ' '.join(text_content.split())
                 
                 if text_content:
-                    lang = "ru" if any(cyr in text_content.lower() for cyr in ['а', 'б', 'в', 'г', 'д', 'е', 'ё', 'ж', 'з', 'и', 'й', 'к', 'л', 'м', 'н', 'о', 'п', 'р', 'с', 'т', 'у', 'ф', 'х', 'ц', 'ч', 'ш', 'щ', 'ъ', 'ы', 'ь', 'э', 'ю', 'я']) else "en"
-                    
                     doc = {
                         "id": str(uuid.uuid4()),
                         "source": "web",
                         "url": current_url,
-                        "title": title if title else "Web Page",
+                        "title": title,
                         "text": text_content,
-                        "lang": lang,
                         "date": datetime.now().isoformat()
                     }
                     documents.append(doc)
+                    
+                    if processed_count < max_pages:
+                        for link in soup.find_all('a', href=True):
+                            href = link['href']
                             
-            except Exception as e:
-                print(f"Ошибка при обработке {current_url}: {e}")
+                            if href.startswith('/'):
+                                full_url = base_url + href
+                            elif href.startswith('./'):
+                                full_url = base_url + href[1:]
+                            elif not href.startswith(('http://', 'https://')):
+                                full_url = base_url + '/' + href.lstrip('/')
+                            else:
+                                full_url = href
+                            
+                            if full_url.startswith(base_url) and full_url not in processed_urls:
+                                if full_url not in urls_to_process:
+                                    urls_to_process.append(full_url)
+            
+            except Exception:
                 continue
         
         if not documents:
-            raise HTTPException(status_code=400, detail="Не удалось извлечь текст со страницы")
+            raise HTTPException(status_code=400, detail="Не удалось извлечь текст ни с одной страницы")
         
         temp_file = tempfile.NamedTemporaryFile(
             mode='w', 
@@ -252,12 +250,13 @@ async def collect_web(
         
         temp_file.close()
         
+        filename = f"web_scrape_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl"
         return FileResponse(
             path=temp_file.name,
-            filename=f"corpus_web_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl",
+            filename=filename,
             media_type='application/json',
             headers={
-                "Content-Disposition": f"attachment; filename=corpus_web_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl"
+                "Content-Disposition": f"attachment; filename={filename}"
             }
         )
         
