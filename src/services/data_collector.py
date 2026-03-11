@@ -11,6 +11,7 @@ from services.api_collector import ApiCollector
 from services.web_collector import WebCollector
 from services.file_collector import FileCollector
 from utils import get_full_error
+from services.preprocessor import Preprocessor
 
 class DataCollectorService:
     def __init__(self):
@@ -20,6 +21,7 @@ class DataCollectorService:
         self.api_collector = ApiCollector()
         self.web_collector = WebCollector()
         self.file_collector = FileCollector()
+        self.preprocessor = Preprocessor()
 
     def _setup_routes(self):
         self.router.add_api_route(
@@ -44,6 +46,14 @@ class DataCollectorService:
             methods=["POST"],
             tags=["Сбор данных"],
             response_description="JSONL файл с содержимым файла"
+        )
+
+        self.router.add_api_route(
+            "/preprocess/jsonl",
+            self.preprocess_file,
+            methods=["POST"],
+            tags=["Препроцессинг"],
+            response_description="JSONL файл с препроцессированными данными"
         )
 
     async def collect_api(
@@ -85,6 +95,20 @@ class DataCollectorService:
                 max_documents=max_documents
             )
             return self._create_jsonl_response(documents, "file")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=get_full_error())
+
+    async def preprocess_file(
+        self,
+        file: UploadFile = File(..., description="Загрузите jsonl файл для препроцессинга", example="data.jsonl"),
+        max_documents: int = Query(1000, description="Максимальное количество документов из файла", ge=1, le=100000),
+        top_n: int = Query(10, description="Топ N лемм для вывода в консоль", ge=1, le=1000)
+    ):
+        try:
+            content_bytes = await file.read()
+            content = content_bytes.decode('utf-8', errors='ignore')
+            documents = self.preprocessor.process_jsonl(content, max_documents=max_documents, top_n=top_n)
+            return self._create_jsonl_response(documents, "preprocess")
         except Exception as e:
             raise HTTPException(status_code=500, detail=get_full_error())
 
